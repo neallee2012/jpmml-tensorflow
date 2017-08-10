@@ -16,164 +16,170 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with JPMML-TensorFlow.  If not, see <http://www.gnu.org/licenses/>.
  */
-package org.jpmml.tensorflow;
+        package org.jpmml.tensorflow;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+        import java.util.ArrayList;
+        import java.util.List;
+        import java.util.Map;
 
-import com.google.common.collect.Lists;
-import com.google.common.primitives.Floats;
-import org.dmg.pmml.DataType;
-import org.dmg.pmml.Entity;
-import org.dmg.pmml.MathContext;
-import org.dmg.pmml.neural_network.NeuralInputs;
-import org.dmg.pmml.neural_network.NeuralLayer;
-import org.dmg.pmml.neural_network.NeuralNetwork;
-import org.dmg.pmml.neural_network.Neuron;
-import org.jpmml.converter.BinaryFeature;
-import org.jpmml.converter.CMatrixUtil;
-import org.jpmml.converter.Feature;
-import org.jpmml.converter.ValueUtil;
-import org.jpmml.converter.neural_network.NeuralNetworkUtil;
-import org.tensorflow.Operation;
-import org.tensorflow.Output;
-import org.tensorflow.Tensor;
-import org.tensorflow.framework.NodeDef;
+        import com.google.common.collect.Lists;
+        import com.google.common.primitives.Floats;
+        import org.dmg.pmml.DataType;
+        import org.dmg.pmml.Entity;
+        import org.dmg.pmml.MathContext;
+        import org.dmg.pmml.neural_network.NeuralInputs;
+        import org.dmg.pmml.neural_network.NeuralLayer;
+        import org.dmg.pmml.neural_network.NeuralNetwork;
+        import org.dmg.pmml.neural_network.Neuron;
+        import org.jpmml.converter.BinaryFeature;
+        import org.jpmml.converter.CMatrixUtil;
+        import org.jpmml.converter.Feature;
+        import org.jpmml.converter.ValueUtil;
+        import org.jpmml.converter.neural_network.NeuralNetworkUtil;
+        import org.tensorflow.Operation;
+        import org.tensorflow.Output;
+        import org.tensorflow.Tensor;
+        import org.tensorflow.framework.NodeDef;
 
 abstract
 public class DNNEstimator extends Estimator {
 
-	public DNNEstimator(SavedModel savedModel, String head){
-		super(savedModel, head);
-	}
+    public DNNEstimator(SavedModel savedModel, String head){
+        super(savedModel, head);
+    }
 
-	protected NeuralNetwork encodeNeuralNetwork(TensorFlowEncoder encoder){
-		SavedModel savedModel = getSavedModel();
+    protected NeuralNetwork encodeNeuralNetwork(TensorFlowEncoder encoder){
+        SavedModel savedModel = getSavedModel();
 
-		NeuralNetwork neuralNetwork = new NeuralNetwork()
-			.setActivationFunction(NeuralNetwork.ActivationFunction.RECTIFIER)
-			.setMathContext(MathContext.FLOAT);
+        NeuralNetwork neuralNetwork = new NeuralNetwork()
+                .setActivationFunction(NeuralNetwork.ActivationFunction.RECTIFIER)
+                .setMathContext(MathContext.FLOAT);
 
-		List<NodeDef> biasAdds = Lists.newArrayList(savedModel.getInputs(getHead(), "BiasAdd"));
+        List<NodeDef> biasAdds = Lists.newArrayList(savedModel.getInputs(getHead(), "BiasAdd"));
+        List<NodeDef> reshapes = Lists.newArrayList(savedModel.getInputs(getHead(), "Reshape"));
 
-		biasAdds = Lists.reverse(biasAdds);
+        biasAdds = Lists.reverse(biasAdds);
+        reshapes =  Lists.reverse(reshapes);
 
-		List<? extends Entity> entities;
+        List<? extends Entity> entities;
 
-		{
-			NodeDef biasAdd = biasAdds.get(0);
+        {
+            NodeDef biasAdd = biasAdds.get(0);
 
-			NodeDef matMul = savedModel.getNodeDef(biasAdd.getInput(0));
-			if(!("MatMul").equals(matMul.getOp())){
+            NodeDef matMul = savedModel.getNodeDef(biasAdd.getInput(0));
+            if(!("MatMul").equals(matMul.getOp()) && !("Conv2D").equals(matMul.getOp())){
+                throw new IllegalArgumentException();
+            }
+
+            NodeDef concat = savedModel.getNodeDef(matMul.getInput(0));
+			/*if(!("ConcatV2").equals(concat.getOp())){
 				throw new IllegalArgumentException();
-			}
+			}*/
 
-			NodeDef concat = savedModel.getNodeDef(matMul.getInput(0));
-			if(!("ConcatV2").equals(concat.getOp())){
-				throw new IllegalArgumentException();
-			}
+            NodeDef reshape = reshapes.get(0);
 
-			List<Feature> features = new ArrayList<>();
+            List<Feature> features = new ArrayList<>();
 
-			List<String> inputNames = concat.getInputList();
-			for(int i = 0; i < inputNames.size() - 1; i++){
-				String inputName = inputNames.get(i);
+            List<String> inputNames = concat.getInputList();
+            for(int i = 0; i < inputNames.size() - 1; i++){
+                String inputName = inputNames.get(i);
 
-				NodeDef term = savedModel.getNodeDef(inputName);
+                NodeDef term = savedModel.getNodeDef(inputName);
 
-				// "real_valued_column"
-				if(("Cast").equals(term.getOp()) || ("Placeholder").equals(term.getOp())){
-					NodeDef placeholder = term;
+                // "real_valued_column"
+                if(("Cast").equals(term.getOp()) || ("Placeholder").equals(term.getOp())){
+                    NodeDef placeholder = term;
 
-					Feature feature = encoder.createContinuousFeature(savedModel, placeholder);
+                    Feature feature = encoder.createContinuousFeature(savedModel, placeholder);
 
-					features.add(feature);
-				} else
+                    features.add(feature);
+                } else
 
-				// "one_hot_column(sparse_column_with_keys)"
-				if(("Sum").equals(term.getOp())){
-					NodeDef oneHot = savedModel.getOnlyInput(term.getInput(0), "OneHot");
+                    // "one_hot_column(sparse_column_with_keys)"
+                    if(("Sum").equals(term.getOp())){
+                        NodeDef oneHot = savedModel.getOnlyInput(term.getInput(0), "OneHot");
 
-					NodeDef placeholder = savedModel.getOnlyInput(oneHot.getInput(0), "Placeholder");
-					NodeDef findTable = savedModel.getOnlyInput(oneHot.getInput(0), "LookupTableFind");
+                        NodeDef placeholder = savedModel.getOnlyInput(oneHot.getInput(0), "Placeholder");
+                        NodeDef findTable = savedModel.getOnlyInput(oneHot.getInput(0), "LookupTableFind");
 
-					Map<?, ?> table = savedModel.getTable(findTable.getInput(0));
+                        Map<?, ?> table = savedModel.getTable(findTable.getInput(0));
 
-					List<String> categories = (List)new ArrayList<>(table.keySet());
+                        List<String> categories = (List)new ArrayList<>(table.keySet());
 
-					List<BinaryFeature> binaryFeatures = encoder.createBinaryFeatures(savedModel, placeholder, categories);
+                        List<BinaryFeature> binaryFeatures = encoder.createBinaryFeatures(savedModel, placeholder, categories);
 
-					features.addAll(binaryFeatures);
-				} else
+                        features.addAll(binaryFeatures);
+                    } else
 
-				{
-					throw new IllegalArgumentException(term.getName());
-				}
-			}
+                    {
+                        throw new IllegalArgumentException(term.getName());
+                    }
+            }
 
-			NeuralInputs neuralInputs = NeuralNetworkUtil.createNeuralInputs(features, DataType.FLOAT);
+            NeuralInputs neuralInputs = NeuralNetworkUtil.createNeuralInputs(features, DataType.FLOAT);
 
-			neuralNetwork.setNeuralInputs(neuralInputs);
+            neuralNetwork.setNeuralInputs(neuralInputs);
 
-			entities = neuralInputs.getNeuralInputs();
-		}
+            entities = neuralInputs.getNeuralInputs();
+        }
 
-		for(int i = 0; i < biasAdds.size(); i++){
-			NodeDef biasAdd = biasAdds.get(i);
+        for(int i = 0; i < biasAdds.size(); i++){
+            NodeDef biasAdd = biasAdds.get(i);
 
-			NodeDef matMul = savedModel.getNodeDef(biasAdd.getInput(0));
-			if(!("MatMul").equals(matMul.getOp())){
-				throw new IllegalArgumentException();
-			}
+            NodeDef matMul = savedModel.getNodeDef(biasAdd.getInput(0));
+            if(!("MatMul").equals(matMul.getOp()) && !("Conv2D").equals(matMul.getOp())){
+                throw new IllegalArgumentException();
+            }
 
-			int count;
+            long count0, count1;
 
-			{
-				Operation operation = savedModel.getOperation(matMul.getName());
+            {
+                Operation operation = savedModel.getOperation(matMul.getName());
 
-				Output output = operation.output(0);
+                Output output = operation.output(0);
 
-				long[] shape = ShapeUtil.toArray(output.shape());
-				if(shape.length != 2 || shape[0] != -1){
+                long[] shape = ShapeUtil.toArray(output.shape());
+				/*if(shape.length != 2 || shape[0] != -1){
 					throw new IllegalArgumentException();
-				}
+				}*/
 
-				count = (int)shape[1];
-			}
+                count1 = (int)shape[1];
+            }
 
-			NodeDef weights = savedModel.getOnlyInput(matMul.getInput(1), "VariableV2");
+            NodeDef weights = savedModel.getOnlyInput(matMul.getInput(1), "VariableV2");
 
-			float[] weightValues;
+            float[] weightValues;
+            long[] shape;
 
-			try(Tensor tensor = savedModel.run(weights.getName())){
-				weightValues = TensorUtil.toFloatArray(tensor);
-			}
+            try(Tensor tensor = savedModel.run(weights.getName())){
+                weightValues = TensorUtil.toFloatArray(tensor);
+                shape = tensor.shape();
+            }
+            count0 = shape[0];
 
-			NodeDef bias = savedModel.getOnlyInput(biasAdd.getInput(1), "VariableV2");
+            NodeDef bias = savedModel.getOnlyInput(biasAdd.getInput(1), "VariableV2");
 
-			float[] biasValues;
+            float[] biasValues;
 
-			try(Tensor tensor = savedModel.run(bias.getName())){
-				biasValues = TensorUtil.toFloatArray(tensor);
-			}
+            try(Tensor tensor = savedModel.run(bias.getName())){
+                biasValues = TensorUtil.toFloatArray(tensor);
+            }
 
-			NeuralLayer neuralLayer = new NeuralLayer();
+            NeuralLayer neuralLayer = new NeuralLayer();
 
-			for(int j = 0; j < count; j++){
-				List<Float> entityWeights = CMatrixUtil.getColumn(Floats.asList(weightValues), entities.size(), count, j);
+            for(int j = 0; j < count1; j++){
+                List<Float> entityWeights = CMatrixUtil.getColumn(Floats.asList(weightValues), (int) shape[0], (int) shape[1], j);
+                Neuron neuron = NeuralNetworkUtil.createNeuron(entities, ValueUtil.floatsToDoubles(entityWeights), ValueUtil.floatToDouble(biasValues[j]))
+                        .setId(String.valueOf(i + 1) + "/" + String.valueOf(j + 1));
 
-				Neuron neuron = NeuralNetworkUtil.createNeuron(entities, ValueUtil.floatsToDoubles(entityWeights), ValueUtil.floatToDouble(biasValues[j]))
-					.setId(String.valueOf(i + 1) + "/" + String.valueOf(j + 1));
+                neuralLayer.addNeurons(neuron);
+            }
 
-				neuralLayer.addNeurons(neuron);
-			}
+            neuralNetwork.addNeuralLayers(neuralLayer);
 
-			neuralNetwork.addNeuralLayers(neuralLayer);
+            entities = neuralLayer.getNeurons();
+        }
 
-			entities = neuralLayer.getNeurons();
-		}
-
-		return neuralNetwork;
-	}
+        return neuralNetwork;
+    }
 }
